@@ -1,138 +1,151 @@
 import os
-import sqlite3
 from dotenv import load_dotenv
+from supabase import create_client, Client
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# Load environment variables from Replit Secrets
+# Load environment variables from .env
 load_dotenv()
+
+# Supabase credentials from environment variables
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_API_KEY = os.getenv("SUPABASE_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID"))
 
-# Initialize database
-DB_FILE = "users.db"
+# Initialize Supabase client
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_API_KEY)
 
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            chat_id INTEGER PRIMARY KEY,
-            username TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+# Function to add a new user to the Supabase database
+async def add_user_to_db(chat_id, username, first_name, last_name):
+    user_data = {
+        "chat_id": chat_id,
+        "username": username,
+        "first_name": first_name,
+        "last_name": last_name
+    }
+    response = supabase.table('users').upsert(user_data).execute()
+    return response
 
-init_db()
+# Function to get a list of all users from the database
+async def get_all_users():
+    response = supabase.table('users').select('*').execute()
+    return response.data
 
-# Function to save user to the database
-def save_user(chat_id, username):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (chat_id, username) VALUES (?, ?)", (chat_id, username))
-    conn.commit()
-    conn.close()
-
-# Function to get all users
-def get_all_users():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT chat_id, username FROM users")
-    users = cursor.fetchall()
-    conn.close()
-    return users
-
-# Start command
+# Start command - Add user to database if not already in the system
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.message.chat_id
-    username = update.message.from_user.username or "Unknown"
-    
-    save_user(chat_id, username)  # Save user in DB
+    username = update.message.from_user.username
+    first_name = update.message.from_user.first_name
+    last_name = update.message.from_user.last_name
 
-    if chat_id == ADMIN_CHAT_ID:
-        keyboard = [
-            [InlineKeyboardButton("Reply to Chats", callback_data='reply_chats')],
-            [InlineKeyboardButton("Broadcast Message", callback_data='broadcast')],
-            [InlineKeyboardButton("Help", callback_data='admin_help')]
-        ]
-    else:
-        keyboard = [[InlineKeyboardButton("Chat with Admin", callback_data='chat_admin')]]
+    # Add user to Supabase database
+    await add_user_to_db(chat_id, username, first_name, last_name)
 
+    keyboard = [
+        [InlineKeyboardButton("Request Mod", callback_data='request_mod')],
+        [InlineKeyboardButton("Report Error", callback_data='report_error')],
+        [InlineKeyboardButton("Suggest Feature", callback_data='suggest_feature')],
+        [InlineKeyboardButton("Chat with Admin", callback_data='chat_admin')],
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text('Please choose an option:', reply_markup=reply_markup)
+
+    await update.message.reply_text(f"Welcome {first_name} {last_name}! Please choose an option:", reply_markup=reply_markup)
 
 # Handle button clicks
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    chat_id = query.message.chat_id
-
     await query.answer()
 
-    if query.data == 'chat_admin':
+    if query.data == 'request_mod':
+        await query.edit_message_text(text="Please send details of the mod you want.")
+        context.user_data['awaiting_mod_request'] = True
+    elif query.data == 'report_error':
+        await query.edit_message_text(text="Please describe the error you encountered.")
+        context.user_data['awaiting_error_report'] = True
+    elif query.data == 'suggest_feature':
+        await query.edit_message_text(text="Please describe your feature suggestion.")
+        context.user_data['awaiting_feature_suggestion'] = True
+    elif query.data == 'chat_admin':
         await query.edit_message_text(text="Send your message, and the admin will respond.")
         context.user_data['chatting_with_admin'] = True
 
-    elif query.data == 'reply_chats' and chat_id == ADMIN_CHAT_ID:
-        users = get_all_users()
-        if not users:
-            await query.edit_message_text("No users have interacted with the bot yet.")
-            return
-
-        keyboard = [[InlineKeyboardButton(f"{user[1]}", callback_data=f"reply_{user[0]}")] for user in users]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("Select a user to reply:", reply_markup=reply_markup)
-
-    elif query.data.startswith("reply_") and chat_id == ADMIN_CHAT_ID:
-        target_user = int(query.data.split("_")[1])
-        context.user_data['reply_target'] = target_user
-        await query.edit_message_text("Enter your reply message:")
-
-    elif query.data == 'broadcast' and chat_id == ADMIN_CHAT_ID:
-        context.user_data['broadcast_mode'] = True
-        await query.edit_message_text("Enter your broadcast message:")
-
-    elif query.data == 'admin_help' and chat_id == ADMIN_CHAT_ID:
-        help_text = """📌 *Bot Features:*
-- Reply to user messages
-- Broadcast messages to all users
-- View list of all users
-- Automatic user saving in database"""
-        await query.edit_message_text(help_text, parse_mode="Markdown")
-
-# Handle messages
+# Handle user messages
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.message.chat_id
     user_message = update.message.text
-    username = update.message.from_user.username or "Unknown"
+    user_id = update.message.chat_id
+    username = update.message.from_user.username or "Unknown User"
 
-    if chat_id == ADMIN_CHAT_ID and 'reply_target' in context.user_data:
-        target_user = context.user_data.pop('reply_target')
-        await context.bot.send_message(target_user, f"✅ *Admin Reply:* {user_message}", parse_mode="Markdown")
-        await update.message.reply_text("Reply sent successfully!")
+    if context.user_data.get('awaiting_mod_request'):
+        await context.bot.send_message(ADMIN_CHAT_ID, f"🔹 *Mod Request* from @{username}:\n{user_message}")
+        await update.message.reply_text("Your mod request has been sent to the admin.")
+        context.user_data['awaiting_mod_request'] = False
 
-    elif chat_id == ADMIN_CHAT_ID and context.user_data.get('broadcast_mode'):
-        users = get_all_users()
-        for user in users:
-            try:
-                await context.bot.send_message(user[0], f"📢 *Broadcast:* {user_message}", parse_mode="Markdown")
-            except:
-                pass  # Skip if user blocked bot
-        await update.message.reply_text("Broadcast message sent to all users.")
-        context.user_data['broadcast_mode'] = False
+    elif context.user_data.get('awaiting_error_report'):
+        await context.bot.send_message(ADMIN_CHAT_ID, f"⚠ *Error Report* from @{username}:\n{user_message}")
+        await update.message.reply_text("Your error report has been sent to the admin.")
+        context.user_data['awaiting_error_report'] = False
+
+    elif context.user_data.get('awaiting_feature_suggestion'):
+        await context.bot.send_message(ADMIN_CHAT_ID, f"💡 *Feature Suggestion* from @{username}:\n{user_message}")
+        await update.message.reply_text("Your feature suggestion has been sent to the admin.")
+        context.user_data['awaiting_feature_suggestion'] = False
 
     elif context.user_data.get('chatting_with_admin'):
-        await context.bot.send_message(ADMIN_CHAT_ID, f"📩 *Message from @{username}:* {user_message}")
+        await context.bot.send_message(ADMIN_CHAT_ID, f"📩 *Message from @{username}*:\n{user_message}")
         await update.message.reply_text("Your message has been sent to the admin.")
+
+# Admin Commands:
+async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.chat_id == ADMIN_CHAT_ID:
+        users = await get_all_users()
+        user_list = "\n".join([f"{user['username']} ({user['chat_id']})" for user in users])
+        await update.message.reply_text(f"List of users:\n{user_list}")
+    else:
+        await update.message.reply_text("You are not authorized to view this information.")
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.chat_id == ADMIN_CHAT_ID:
+        message = ' '.join(context.args)
+        users = await get_all_users()
+        for user in users:
+            await context.bot.send_message(user['chat_id'], message)
+        await update.message.reply_text("Message sent to all users.")
+    else:
+        await update.message.reply_text("You are not authorized to send messages to all users.")
+
+async def help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.chat_id == ADMIN_CHAT_ID:
+        help_text = (
+            "Bot Features:\n"
+            "- /start: Register and interact with the bot.\n"
+            "- /list_users: List all users (admin only).\n"
+            "- /broadcast <message>: Send a message to all users (admin only).\n"
+            "- /help: View available bot commands (admin only).\n"
+            "- /request_mod: Request a moderator.\n"
+            "- /report_error: Report an error.\n"
+            "- /suggest_feature: Suggest a new feature.\n"
+            "- /chat_admin: Chat with the admin."
+        )
+        await update.message.reply_text(help_text)
+    else:
+        await update.message.reply_text("You are not authorized to view help information.")
 
 # Main function
 def main() -> None:
     app = Application.builder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler('start', start))
+    # Adding handlers for commands and buttons
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+    # Admin commands
+    app.add_handler(CommandHandler("list_users", list_users))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("help", help))
+
+    # Run the bot
     app.run_polling()
 
 if __name__ == '__main__':
