@@ -27,10 +27,12 @@ def webhook():
     return 'ok', 200
 
 # Set webhook on startup
-@app.before_first_request
 def set_webhook():
     bot.remove_webhook()
     bot.set_webhook(url=f"{config.WEBHOOK_URL}/webhook")
+
+# Run set_webhook when the app starts
+set_webhook()
 
 # Start bot with Flask
 if __name__ == "__main__":
