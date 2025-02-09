@@ -19,6 +19,15 @@ database.init_db()
 admin_handlers(bot)
 user_handlers(bot)
 
+# Root route to avoid 404 errors
+@app.route('/')
+def home():
+    return """
+    <h1>Welcome to the Your TelegramBot!</h1>
+    <p>This is a web app hosting a Telegram bot. If you're seeing this,it means that the bot is running correctly and you have made Mr Anderson proud.</p>
+    <p>To interact with the bot, visit <a href="https://t.me/bobmods_bot">Telegram</a>.</p>
+    """
+
 # Webhook route for Koyeb
 @app.route('/webhook', methods=['POST'])
 def webhook():
