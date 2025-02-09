@@ -26,11 +26,12 @@ def webhook():
     bot.process_new_updates([update])
     return 'ok', 200
 
-# Start bot with Flask
-if __name__ == "__main__":
-    # Set webhook for Koyeb
+# Set webhook on startup
+@app.before_first_request
+def set_webhook():
     bot.remove_webhook()
     bot.set_webhook(url=f"{config.WEBHOOK_URL}/webhook")
-    
-    # Start Flask app
+
+# Start bot with Flask
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
